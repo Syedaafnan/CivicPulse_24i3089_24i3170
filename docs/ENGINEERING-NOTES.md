@@ -159,17 +159,50 @@ unrestricted so it can still reach Groq.
 
 ## 8. The failure — something that cost more than an hour
 
-**TODO — this one has to be a real incident from your own work on this project, not a generic
-one.** Write 3-5 sentences covering:
-- **Symptoms**: what you actually observed (an error message, a hung request, a wrong dashboard
-  number, a CI job that wouldn't go green).
-- **What you wrongly believed first**: your initial, incorrect theory about the cause, and why it
-  seemed plausible at the time.
-- **The exact command or log line that finally told you the truth**: paste it verbatim.
+The first time we actually switched `TRIAGE_PROVIDER` from `rules` to `llm` and submitted a real
+complaint through a real Groq key, the response came back with `"triaged_by": "rules:fallback"`
+instead of `"llm:groq"`. The fallback worked exactly as designed — `201`, not `500` — which is
+precisely the problem: a silently-successful fallback is easy to mistake for "it's working," when
+what actually happened is the real LLM path was failing every single time.
 
-Good candidates to look back at, if nothing comes to mind immediately: the first time
-`docker compose up` failed because of the `internal: true` network and a service couldn't resolve
-another container's hostname; the first `kubectl rollout status` that hung because a readiness
-probe was pointed at the wrong path; a coverage or lint failure in CI that passed locally but
-failed in the runner because of the environment differences described in Q1; or a migration that
-worked against a fresh database but failed against the seeded one.
+**What we wrongly believed first:** with a fresh key and a container running inside Docker, the
+obvious suspect is networking — DNS resolution from inside the container, an outbound firewall
+rule, or a bad `LLM_BASE_URL`. We nearly started debugging egress rules before checking anything
+else, since "container can't reach the internet" is the most common reason an LLM call fails in a
+Dockerized backend.
+
+**What actually told us the truth** was the structured fallback warning our own logging already
+produces (`backend/app/services/triage_service.py`'s fallback log call), which we could read
+directly from `docker compose logs backend`:
+```
+{"level": "WARNING", "logger": "app.services.triage_service", "msg": "triage fallback",
+ "provider": "llm:groq", "error_class": "TriageBadRequest"}
+```
+`TriageBadRequest` is only ever raised for a genuine 4xx *response* from the provider
+(`backend/app/providers/triage/llm.py:76-77`) — never for a network/DNS/timeout failure, those are
+different exception types entirely. That one field ruled out the entire networking theory in one
+line and pointed straight at "Groq is rejecting the request itself," which we confirmed by
+replaying the exact same request directly against `https://api.groq.com/openai/v1/chat/completions`
+with `curl` and reading Groq's own error body: `"The model \`llama-3.1-8b-instant\` does not exist
+or you do not have access to it"` (`code: model_not_found`) — the model the code had shipped with
+had simply been deprecated from Groq's lineup since this project was written.
+
+That would have been the end of it, except fixing the model name (to `openai/gpt-oss-20b`,
+confirmed against a live `GET /openai/v1/models` call) immediately surfaced a *second*, unrelated
+failure on a harder input (a prompt-injection attempt), with the identical `error_class:
+TriageBadRequest` log line. The wrong theory this time: Groq must be blocking the input itself as
+unsafe/adversarial content, since Groq does host dedicated moderation models
+(`meta-llama/llama-prompt-guard-2-*`) alongside general-purpose ones. Replaying that exact request
+again with `curl` disproved it in one line: Groq's real error was
+`"failed_generation": "max completion tokens reached before generating a valid document"` — nothing
+to do with content moderation. `openai/gpt-oss-20b` is a reasoning model that spends completion
+tokens on a hidden reasoning trace before writing the visible JSON, and `max_tokens: 200`
+(`backend/app/providers/triage/llm.py:119`) wasn't enough headroom for a harder prompt's reasoning
++ answer combined, so Groq rejected the whole request rather than returning a truncated one. Raising
+it to `600` (verified against the same live request) fixed it.
+
+The lesson that generalizes: a fallback path that returns `201` on failure is exactly the kind of
+"it degrades gracefully" behavior the assignment asks for — and exactly the kind of behavior that
+can hide two real, unrelated, provider-side bugs behind a single generic `error_class` in the log,
+unless you're willing to replay the actual failing request outside your own code to see what the
+provider is really saying.
