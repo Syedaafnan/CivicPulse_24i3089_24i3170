@@ -17,7 +17,8 @@ COPY default.conf.template /etc/nginx/templates/default.conf.template
 COPY docker-entrypoint.d/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
 COPY --from=build /src/dist /usr/share/nginx/html
 # Non-root: nginx user (uid 101) owns only what it must write at start-up.
-RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh \
+RUN apk update && apk upgrade --no-cache \
+ && chmod +x /docker-entrypoint.d/40-runtime-config.sh \
  && touch /usr/share/nginx/html/config.js \
  && rm -f /etc/nginx/conf.d/default.conf \
  && chown -R 101:101 /usr/share/nginx/html/config.js /etc/nginx/conf.d
