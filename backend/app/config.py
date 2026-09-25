@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Groq (OpenAI-compatible). Base URL is configurable so any
     # OpenAI-compatible free tier (OpenRouter, Gemini's OpenAI endpoint) works.
     llm_base_url: str = "https://api.groq.com/openai/v1"
-    llm_model: str = "llama-3.1-8b-instant"
+    llm_model: str = "openai/gpt-oss-20b"
     llm_api_key: SecretStr = SecretStr("")
     llm_provider_label: str = "groq"
 
