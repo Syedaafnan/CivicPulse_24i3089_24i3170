@@ -116,7 +116,7 @@ class LLMTriage(_HttpJsonProvider):
             "model": self._model,
             "messages": build_messages(text, location),
             "temperature": 0,
-            "max_tokens": 200,
+            "max_tokens": 600,
             "response_format": {"type": "json_object"},
         }
         headers = {"Authorization": f"Bearer {self.__api_key}"}

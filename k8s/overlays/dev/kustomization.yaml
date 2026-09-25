@@ -1,0 +1,32 @@
+# Local kind/k3d cluster: images built locally and loaded with `kind load docker-image`.
+#   ./scripts/kind-up.sh   (builds, loads and applies this overlay)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: civicpulse-backend
+    newName: civicpulse-backend
+    newTag: dev                 # IfNotPresent pull policy by default for non-latest tags
+  - name: civicpulse-frontend
+    newName: civicpulse-frontend
+    newTag: dev
+patches:
+  # Secret is created by scripts/kind-up.sh BEFORE apply (Postgres reads its password only on first boot).
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: civicpulse-secrets
+  - target: { kind: ConfigMap, name: civicpulse-config }
+    patch: |-
+      - op: replace
+        path: /data/ENVIRONMENT
+        value: dev
+      - op: replace
+        path: /data/APP_ENVIRONMENT
+        value: dev
+      - op: replace
+        path: /data/LOG_LEVEL
+        value: DEBUG

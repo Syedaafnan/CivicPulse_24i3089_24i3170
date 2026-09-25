@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels: { app: backend }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5          # what `kubectl rollout undo` can go back to
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                  # add one new pod at a time
+      maxUnavailable: 0            # never drop below the desired count → zero downtime
+  selector:
+    matchLabels: { app: backend }
+  template:
+    metadata:
+      labels: { app: backend }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # preStop (10 s) + uvicorn drain (GRACEFUL_SHUTDOWN_SECONDS=20 s) + margin
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # Alembic migrations + idempotent seed. Safe with N replicas: guarded by Postgres advisory locks.
+        # Retries (pod restart backoff) until Postgres is reachable.
+        - name: migrate
+          image: civicpulse-backend
+          command: ["sh", "scripts/migrate.sh"]
+          envFrom:
+            - configMapRef: { name: civicpulse-config }
+          env: &backend-env
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: civicpulse-secrets, key: POSTGRES_PASSWORD } }
+            - name: LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: civicpulse-secrets, key: LLM_API_KEY, optional: true } }
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext: &container-security
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: &tmp-mount
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: backend
+          image: civicpulse-backend
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef: { name: civicpulse-config }
+          env: *backend-env
+          # Slow start is not failure: up to 30 x 2 s = 60 s before liveness takes over.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          # Restarts the pod. MUST NOT depend on the database, or a slow DB restarts every pod.
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Removes the pod from Service endpoints. SHOULD depend on Postgres + Redis (/ready checks both).
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            # Keep serving while the endpoint removal propagates to kube-proxy / the ingress,
+            # THEN SIGTERM arrives and uvicorn drains in-flight requests.
+            preStop:
+              exec: { command: ["sleep", "10"] }
+          # Requests are mandatory: HPA utilisation = usage / request. Initial guess; see docs/VPA.md.
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          securityContext: *container-security
+          volumeMounts: *tmp-mount
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels: { app: backend }
+spec:
+  type: ClusterIP
+  selector: { app: backend }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
