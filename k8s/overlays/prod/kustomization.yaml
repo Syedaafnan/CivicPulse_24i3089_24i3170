@@ -1,0 +1,35 @@
+# Production overlay. CD deploys it by IMMUTABLE reference:
+#   kustomize edit set image civicpulse-backend=ghcr.io/<owner>/civicpulse-backend@sha256:<digest>
+# The committed values below are placeholders that must never reach a cluster
+# (they are not :latest and do not exist in the registry).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: civicpulse-backend
+    newName: ghcr.io/OWNER/civicpulse-backend
+    newTag: set-by-cd
+  - name: civicpulse-frontend
+    newName: ghcr.io/OWNER/civicpulse-frontend
+    newTag: set-by-cd
+patches:
+  # The real Secret is created out-of-band from GitHub Secrets (see cd.yml), so the
+  # placeholder Secret from base must never be applied over it.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: civicpulse-secrets
+  - target: { kind: ConfigMap, name: civicpulse-config }
+    patch: |-
+      - op: replace
+        path: /data/ENVIRONMENT
+        value: production
+      - op: replace
+        path: /data/APP_ENVIRONMENT
+        value: production
+      - op: replace
+        path: /data/TRIAGE_PROVIDER
+        value: llm

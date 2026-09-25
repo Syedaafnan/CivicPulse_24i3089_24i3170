@@ -1,0 +1,17 @@
+# Local cluster for the dev overlay and for CD's ephemeral cluster.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: civicpulse
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:          # ingress-nginx on the host's port 80
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+  - role: worker
