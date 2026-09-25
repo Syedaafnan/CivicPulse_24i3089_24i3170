@@ -1,0 +1,251 @@
+# CI — runs on every PR (to main or dev) and on every push to dev.
+# Also reused by cd.yml / release.yml (workflow_call) so the merged result is tested again.
+# Nothing here publishes anything: no registry login, no push.
+name: ci
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev]
+  workflow_call:
+
+permissions:
+  contents: read           # least privilege: read the code, nothing else
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  KUSTOMIZE_VERSION: "5.5.0"
+  KUBECONFORM_VERSION: "0.6.7"
+  HADOLINT_VERSION: "2.12.0"
+  TRIVY_VERSION: "0.74.0"
+
+jobs:
+  lint-and-type:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: backend — ruff + mypy
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          ruff check .
+          ruff format --check .
+          mypy app
+      - name: backend — OpenAPI schema committed for the frontend is current
+        working-directory: backend
+        run: |
+          python scripts/export_openapi.py /tmp/openapi.json
+          diff -u ../frontend/src/api/openapi.json /tmp/openapi.json \
+            || { echo "::error::Run 'python scripts/export_openapi.py ../frontend/src/api/openapi.json && (cd ../frontend && npm run gen:api)'"; exit 1; }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: frontend — eslint + tsc --noEmit + typed client in sync
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run typecheck
+          npm run check:api
+      - name: Dockerfiles — hadolint
+        run: |
+          curl -sSfL -o /tmp/hadolint "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          chmod +x /tmp/hadolint
+          /tmp/hadolint backend/Dockerfile frontend/Dockerfile
+
+  test-backend:
+    runs-on: ubuntu-24.04
+    env:
+      TRIAGE_PROVIDER: simulated     # deterministic by design: no network, no LLM, no flakes
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: pytest (coverage ≥ 65 % on app/)
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          pytest --cov=app --cov-fail-under=65 --cov-report=term-missing --cov-report=xml
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: ignore
+
+  test-frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: vitest component tests
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+  build:
+    # Build both images exactly as production would — but DO NOT push. A PR must not publish artifacts.
+    needs: [lint-and-type, test-backend, test-frontend]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image: [backend, frontend]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3.8.0
+      - name: build civicpulse-${{ matrix.image }} (no push)
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: ${{ matrix.image }}
+          push: false
+          tags: civicpulse-${{ matrix.image }}:dev
+          outputs: type=docker,dest=/tmp/civicpulse-${{ matrix.image }}.tar
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: report image size
+        run: |
+          docker load -i /tmp/civicpulse-${{ matrix.image }}.tar
+          docker image ls civicpulse-${{ matrix.image }}:dev --format '{{.Repository}}:{{.Tag}} {{.Size}}' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: image-${{ matrix.image }}
+          path: /tmp/civicpulse-${{ matrix.image }}.tar
+          retention-days: 1
+
+  scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [backend, frontend]
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: image-${{ matrix.image }}
+          path: /tmp
+      - name: install trivy (pinned version, checksum verified)
+        run: |
+          cd /tmp
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -sSfLO "$base/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfLO "$base/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+      - name: trivy — fail on HIGH/CRITICAL with a fixed version available
+        run: |
+          /tmp/trivy image --input /tmp/civicpulse-${{ matrix.image }}.tar \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress
+
+  manifests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: install kustomize + kubeconform (pinned)
+        run: |
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar xz -C /usr/local/bin kustomize
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz -C /usr/local/bin kubeconform
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pyyaml==6.0.2
+      - name: kustomize build | kubeconform (both overlays)
+        run: |
+          for overlay in dev prod; do
+            echo "--- overlays/$overlay"
+            kustomize build "k8s/overlays/$overlay" | kubeconform -strict -summary \
+              -kubernetes-version 1.31.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+      - name: guardrails — no :latest, no NodePort/LoadBalancer, requests on every container
+        run: |
+          out=$(kustomize build k8s/overlays/prod)
+          if grep -E 'image: .*:latest$' <<<"$out"; then echo "::error::':latest' in manifests"; exit 1; fi
+          if grep -E 'type: (NodePort|LoadBalancer)' <<<"$out"; then echo "::error::non-ClusterIP Service"; exit 1; fi
+          python - "$out" <<'PY'
+          import sys, yaml
+          bad = []
+          for doc in yaml.safe_load_all(sys.argv[1]):
+              spec = (doc or {}).get("spec", {})
+              pod = spec.get("template", {}).get("spec", {})
+              for c in pod.get("containers", []) + pod.get("initContainers", []):
+                  r = c.get("resources", {})
+                  if "cpu" not in r.get("requests", {}) or "memory" not in r.get("limits", {}):
+                      bad.append(f'{doc["kind"]}/{doc["metadata"]["name"]}:{c["name"]}')
+          if bad:
+              sys.exit("missing requests/limits: " + ", ".join(bad))
+          print("every container has requests and limits")
+          PY
+
+  integration:
+    # "Does my code work with everybody else's code?" — the real images, the real Compose file.
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      TRIAGE_PROVIDER: simulated
+      EXPECT_CATEGORY: water
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: image-*
+          path: /tmp/images
+          merge-multiple: true
+      - name: load the images CI just built
+        run: for f in /tmp/images/*.tar; do docker load -i "$f"; done
+      - name: docker compose up -d
+        run: |
+          cp .env.example .env
+          echo "POSTGRES_PASSWORD=ci-$(openssl rand -hex 12)" >> .env
+          docker compose up -d --no-build
+      - name: wait for /ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/ready; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "::error::backend never became ready"; exit 1
+      - name: smoke — POST, GET back, category, X-Cache MISS → HIT
+        run: ./scripts/smoke.sh http://localhost:8080
+      - name: network segmentation — frontend must NOT reach the database
+        run: |
+          # positive control first: nc works and the frontend CAN reach the backend
+          docker compose exec -T frontend sh -c 'nc -z -w 3 backend 8000'
+          if docker compose exec -T frontend sh -c 'nc -z -w 3 postgres 5432'; then
+            echo "::error::frontend reached postgres — segmentation broken"; exit 1
+          fi
+          echo "frontend cannot reach postgres (expected)"
+      - name: persistence — down/up keeps every row
+        run: |
+          before=$(curl -sf http://localhost:8000/api/complaints?page_size=1 | jq .total)
+          docker compose down
+          docker compose up -d --no-build
+          for i in $(seq 1 60); do curl -sf http://localhost:8000/ready >/dev/null && break; sleep 2; done
+          after=$(curl -sf http://localhost:8000/api/complaints?page_size=1 | jq .total)
+          echo "rows before=$before after=$after"
+          [ "$before" = "$after" ]
+      - name: logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+      - name: docker compose down -v
+        if: always()
+        run: docker compose down -v
