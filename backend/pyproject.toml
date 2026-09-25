@@ -1,0 +1,35 @@
+[project]
+name = "civicpulse-backend"
+version = "1.0.0"
+description = "CivicPulse — municipal complaint intake, AI triage and operations API"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "BLE"]
+ignore = ["B008", "S101", "S311"]  # FastAPI Depends() defaults; asserts; random for jitter is fine
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "BLE", "E501"]
+"app/seed.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --cov=app --cov-report=term-missing --cov-fail-under=65"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+omit = ["app/server.py"]
