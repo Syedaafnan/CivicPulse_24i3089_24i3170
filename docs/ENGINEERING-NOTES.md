@@ -77,25 +77,51 @@ real LLM's non-determinism to reliably trigger those code paths on every run.
 
 ## 5. HPA lag: seconds between offered load rising and replicas rising
 
-**TODO — fill in after running the real load test.** This requires actually running
-`load/k6-script.js` (or `hey`) against the cluster while capturing `kubectl get hpa -w`
-(`scripts/record-hpa.sh` is set up for this), then reading the timestamps back out.
+Measured on a real run: `load/k6-script.js` against the kind cluster's Ingress, with
+`scripts/record-hpa.sh` sampling `kubectl get hpa` every 5s (raw data: `docs/evidence/hpa-run2.csv`,
+chart: `docs/evidence/replicas-vs-load-chart.png`, VPA cross-check: `docs/evidence/vpa-recommendation.txt`).
 
-To fill this in:
-1. Run `scripts/kind-up.sh` then `scripts/cluster-addons.sh` (installs metrics-server).
-2. Start `kubectl get hpa -w -n civicpulse > hpa-watch.log &` before generating load.
-3. Run the k6 script against the Ingress and note the wall-clock time load ramped up.
-4. Diff that timestamp against the first `hpa-watch.log` line showing `REPLICAS` increase.
-5. Report the lag in seconds, and break down where it went: metrics-server's scrape interval
-   (default 15–60s), the HPA controller's own sync period (default 15s,
-   `--horizontal-pod-autoscaler-sync-period`), `scaleUp.stabilizationWindowSeconds: 0`
-   (`k8s/base/hpa.yaml:23` — this is deliberately zero, so it does not contribute to the lag), and
-   new pod startup + `startupProbe` time (`k8s/base/backend.yaml:66-69`,
-   `failureThreshold: 30` × `periodSeconds: 2` = up to 60s budget before a slow-starting pod is
-   even considered).
-6. What would reduce it: a shorter metrics-server scrape interval, a lower HPA sync period, or
-   (more realistically for user-facing latency) over-provisioning `minReplicas` above the
-   steady-state floor so the lag window is absorbed by existing headroom rather than new pods.
+k6's second stage (`load/k6-script.js`'s `{duration:"1m", target:60}`) starts the real ramp at
+**t=30s** into the run (the first 30s stage only ramps 0→10 VUs, which never pushes CPU over
+target). From the CSV:
+
+- **t=30s** — offered load starts rising (k6 begins ramping 10→60 VUs)
+- **t=42s** (+12s) — `desired_replicas` first increases (2→3) as `cpu_utilisation_pct` crosses the
+  60% target (75%) — this 12s is metrics-server's scrape interval + the HPA controller's sync
+  period both landing close together
+- **t=59s** (+29s from load start) — `current_replicas` actually increases (2→3) — the ~17s gap
+  behind `desired_replicas` changing is pod scheduling + container start (image was already
+  `kind load`-ed, so no pull time) + passing `startupProbe`
+- **t=86s** (+56s from load start) — `current_replicas` reaches `maxReplicas: 10` — full scale-out
+  complete
+
+So: **~12s to detect, ~29s to the first additional pod, ~56s to full capacity.** This lines up with
+`scaleUp.stabilizationWindowSeconds: 0` (`k8s/base/hpa.yaml:23`) contributing nothing to the delay —
+the lag is entirely metrics-server's scrape cadence, the controller's own sync period, and real pod
+startup time, exactly as predicted before running this.
+
+A second, unplanned finding from the same run: CPU utilization did **not** come back down to target
+once maxed out — it held at 380–456%/60% for the entire 3-minute sustained-load stage even at 10/10
+replicas (see the chart). Cross-checked against `docs/evidence/vpa-recommendation.txt`: VPA's real
+`Target` recommendation for the backend container is **476m CPU**, against the **100m** actually
+requested in `k8s/base/backend.yaml:89`. So `maxReplicas: 10` wasn't the bottleneck — the per-pod
+CPU request was undersized by roughly 4-5x relative to real demand, meaning this workload needed
+either a higher `maxReplicas` ceiling or (per the VPA recommendation) a larger request per pod, not
+faster autoscaling.
+
+Scale-down was not captured within the recording window: k6's ramp-down stage doesn't bring CPU
+back under target until roughly t=344-360s, and `scaleDown.stabilizationWindowSeconds: 300`
+(`k8s/base/hpa.yaml:19`) requires 5 continuous minutes below target before scaling in — so the
+earliest a scale-down could have started was around t=650-660s, well past where recording stopped
+(t=365s). That gap between "load actually dropped" and "cooldown window even starts counting" is
+itself the point of that setting: scaling down slowly on purpose costs nothing under real traffic
+patterns, but does mean a short dip in load will never trigger a scale-in at all.
+
+**What would reduce the lag:** a shorter metrics-server scrape interval or HPA sync period would
+shave a few seconds off the ~12s detection time, but the larger, more actionable lever here is
+sizing `requests.cpu` correctly in the first place (per the VPA recommendation) — a workload that
+needed 476m and was scaled based on a 100m request will always look far more "overloaded" than it
+is, triggering aggressive scale-out sooner than a correctly-sized request would.
 
 ## 6. Why VPA runs in `Off` mode, and the failure mode of running it in `Auto` alongside the HPA
 
