@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------- builder: compile/install dependencies into a venv ----------
-FROM python:3.12.8-slim-bookworm AS builder
+FROM python:3.14.7-slim-bookworm AS builder
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # ---------- runtime: no compilers, no pip cache, non-root ----------
-FROM python:3.12.8-slim-bookworm AS runtime
+FROM python:3.14.7-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --no-create-home app
