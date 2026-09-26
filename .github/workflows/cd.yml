@@ -77,13 +77,13 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
       - name: SBOM (Syft) — backend
-        uses: anchore/sbom-action@df80a981bc6edbc4e220a492d3cbe9f5547a6e75 # v0.17.9
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ghcr.io/${{ steps.owner.outputs.owner }}/civicpulse-backend@${{ steps.backend.outputs.digest }}
           format: spdx-json
           artifact-name: sbom-backend.spdx.json
       - name: SBOM (Syft) — frontend
-        uses: anchore/sbom-action@df80a981bc6edbc4e220a492d3cbe9f5547a6e75 # v0.17.9
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ghcr.io/${{ steps.owner.outputs.owner }}/civicpulse-frontend@${{ steps.frontend.outputs.digest }}
           format: spdx-json
