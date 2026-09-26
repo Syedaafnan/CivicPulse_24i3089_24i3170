@@ -1,0 +1,14 @@
+# Force LF regardless of platform/core.autocrlf - a CRLF shell script breaks
+# inside a Linux container ("set: Illegal option -" from a stray \r).
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.dockerignore text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

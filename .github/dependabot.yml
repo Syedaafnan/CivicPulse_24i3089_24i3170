@@ -1,0 +1,19 @@
+# Keeps SHA-pinned actions, Python/npm deps and base images current via PRs to dev.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /backend
+    target-branch: dev
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /frontend
+    target-branch: dev
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: [/backend, /frontend]
+    target-branch: dev
+    schedule: { interval: weekly }

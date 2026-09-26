@@ -1,0 +1,138 @@
+# Development stack: `docker compose up --build`  →  http://localhost:8080
+# Two networks: the frontend can reach the backend, and ONLY the backend can reach Postgres/Redis.
+name: civicpulse
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379/0
+  TRIAGE_PROVIDER: ${TRIAGE_PROVIDER:-rules}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+  LLM_MODEL: ${LLM_MODEL:-llama-3.1-8b-instant}
+  LLM_PROVIDER_LABEL: ${LLM_PROVIDER_LABEL:-groq}
+  OLLAMA_BASE_URL: http://ollama:11434
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+  RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-10}
+  ENVIRONMENT: dev
+  LOG_LEVEL: INFO
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redisdata:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+  # One-shot: apply Alembic migrations, then the idempotent seed. Schema is never created by app start-up.
+  migrate:
+    build: ./backend
+    image: civicpulse-backend:dev
+    command: ["sh", "scripts/migrate.sh"]
+    environment: *backend-env
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  backend:
+    build: ./backend
+    image: civicpulse-backend:dev
+    restart: unless-stopped
+    # Dev only: hot reload from the bind-mounted source.
+    command: ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
+    environment: *backend-env
+    volumes:
+      - ./backend/app:/app/app:ro   # dev bind mount — must NOT exist in compose.prod.yaml
+    ports: ["8000:8000"]            # handy for /docs while developing
+    networks: [edge, internal]     # the only service on both networks
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+
+  frontend:
+    build: ./frontend
+    image: civicpulse-frontend:dev
+    restart: unless-stopped
+    environment:
+      BACKEND_UPSTREAM: http://backend:8000
+      APP_ENVIRONMENT: dev
+    ports: ["8080:8080"]
+    networks: [edge]                # cannot resolve or reach postgres/redis
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 64M }
+
+  # Offline triage path: `docker compose --profile ollama up`, then TRIAGE_PROVIDER=ollama.
+  # First run: docker compose exec ollama ollama pull llama3.2:1b
+  ollama:
+    image: ollama/ollama:0.3.14
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    networks: [edge]                # needs internet once, to pull model weights
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 3G }
+
+networks:
+  edge:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true     # no route to the outside world
+
+volumes:
+  pgdata:          # PostgreSQL data directory — the durable one
+  redisdata:       # Redis AOF: keeps rate-limit windows + triage cache (LLM quota) across restarts
+  ollama_models:   # model weights, so ~800 MB is not re-pulled on every `up`
