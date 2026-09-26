@@ -8,7 +8,7 @@ COPY . .
 RUN npm run build
 
 # ---------- serve stage: static files + nginx only ----------
-FROM nginx:1.27.3-alpine AS runtime
+FROM nginx:1.31.0-alpine AS runtime
 # Upstream for the /api proxy. Overridable per environment; nothing is baked into the JS bundle.
 ENV BACKEND_UPSTREAM=http://backend:8000 \
     APP_ENVIRONMENT=production
