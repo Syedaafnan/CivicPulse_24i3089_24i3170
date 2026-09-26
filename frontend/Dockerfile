@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------- build stage: Node toolchain, never reaches the final image ----------
-FROM node:22.12.0-alpine3.20 AS build
+FROM node:24.1.0-alpine3.20 AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -8,7 +8,7 @@ COPY . .
 RUN npm run build
 
 # ---------- serve stage: static files + nginx only ----------
-FROM nginx:1.27.3-alpine AS runtime
+FROM nginx:1.31.0-alpine AS runtime
 # Upstream for the /api proxy. Overridable per environment; nothing is baked into the JS bundle.
 ENV BACKEND_UPSTREAM=http://backend:8000 \
     APP_ENVIRONMENT=production
