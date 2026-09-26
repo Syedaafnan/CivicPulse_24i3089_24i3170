@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------- build stage: Node toolchain, never reaches the final image ----------
-FROM node:22.12.0-alpine3.20 AS build
+FROM node:24.1.0-alpine3.20 AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
