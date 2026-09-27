@@ -1,4 +1,4 @@
-"""Domain vocabulary and business rules, independent of HTTP, SQL or providers.
+"""Core domain vocabulary and rules, decoupled from HTTP, SQL and providers.
 
 The status state machine lives here as an explicit transition table.
 The frontend never copies this table: every complaint returned by the API

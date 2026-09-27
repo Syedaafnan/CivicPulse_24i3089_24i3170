@@ -1,5 +1,4 @@
-# CivicPulse
-
+# CivicPulse — Municipal Complaint Platform
 [![ci](https://github.com/OWNER/civicpulse/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/OWNER/civicpulse/actions/workflows/ci.yml)
 [![cd](https://github.com/OWNER/civicpulse/actions/workflows/cd.yml/badge.svg)](https://github.com/OWNER/civicpulse/actions/workflows/cd.yml)
 <!-- replace OWNER with your GitHub user/org -->
