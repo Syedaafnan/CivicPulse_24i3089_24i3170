@@ -1,4 +1,4 @@
-/** Runtime (not build-time) configuration, read from window.__CIVICPULSE_CONFIG__ set by /config.js. */
+/** Runtime configuration, read from window.__CIVICPULSE_CONFIG__ (set by /config.js). */
 export interface RuntimeConfig {
   environment: string;
   apiBase: string;
