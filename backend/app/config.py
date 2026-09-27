@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.groq.com/openai/v1"
     llm_model: str = "llama-3.1-8b-instant"
     llm_api_key: SecretStr = SecretStr("")
-    llm_provider_label: str = "groq"
+    llm_provider_label: str = "groq-api"
 
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "llama3.2:1b"
