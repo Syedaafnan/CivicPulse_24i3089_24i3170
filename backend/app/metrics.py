@@ -4,7 +4,7 @@ from prometheus_client import Counter, Histogram
 
 HTTP_REQUESTS = Counter(
     "http_requests_total",
-    "HTTP requests handled",
+    "Total HTTP requests handled",
     ["method", "path", "status"],
 )
 HTTP_LATENCY = Histogram(
