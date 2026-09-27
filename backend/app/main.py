@@ -34,7 +34,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         c.close()
 
     app = FastAPI(
-        title="CivicPulse API",
+        title="CivicPulse Backend API",
         version="1.0.0",
         description="Municipal complaint intake, AI triage and operations.",
         lifespan=lifespan,
