@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
-request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+request_id_var: ContextVar[str] = ContextVar("request_id", default="none")
 
 # Attributes every LogRecord has; anything else was passed via `extra=` and is emitted.
 _RESERVED = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {"message", "asctime"}
