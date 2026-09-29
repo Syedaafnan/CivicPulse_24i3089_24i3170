@@ -1,37 +1,43 @@
 # Engineering notes
 
 Answers to the eight questions in Assignment §5.2, with references to this repository's own files
-and lines. Two answers (5 and 8) require data this document can't invent on your behalf — they're
-left as explicit TODOs with instructions for what to fill in and how.
+and lines.
 
 ## 1. Three things that differ between a laptop and a CI runner, and the exact line freezing each
 
-1. **Language/runtime versions.** A laptop might have any Python/Node installed locally; both are
-   frozen to an exact patch version by the Dockerfile `FROM` lines: `backend/Dockerfile:3,13`
-   (`FROM python:3.12.8-slim-bookworm`) and `frontend/Dockerfile:3` (`FROM
-   node:22.12.0-alpine3.20`). Since `ci.yml`, `compose.yaml`, and the k8s manifests all build from
-   these same Dockerfiles, the runner and every deploy target get byte-identical toolchains.
+1. **Operating system and line endings.** Our laptops run Windows 11 with Git's `core.autocrlf`, and
+   the runner is `ubuntu-24.04`. A shell script checked out with CRLF endings breaks inside a Linux
+   container (`set: Illegal option -` from the stray `\r`). `.gitattributes:3`
+   (`* text=auto eol=lf`) and `.gitattributes:5` (`*.sh text eol=lf`) freeze the line endings for
+   every checkout on every OS. The Linux userland itself comes from the `FROM` lines below.
 
-2. **Network access to the real LLM provider.** A developer's laptop can reach Groq; a CI runner
-   should not depend on that (rate limits, flakiness, cost, and non-determinism). This is frozen by
-   `.github/workflows/ci.yml:68` and `:204`, which set `TRIAGE_PROVIDER: simulated` for the
-   backend-test and integration jobs respectively — CI always exercises `SimulatedTriage`
-   (`backend/app/providers/triage/simulated.py`), never a live network call.
+2. **Interpreter and runtime versions.** One laptop has Python 3.14 installed at `C:\Python314`, and
+   Node is whatever version the developer installed last. What ships is frozen to an exact patch
+   release by `backend/Dockerfile:3` and `:14` (`FROM python:3.14.7-slim-bookworm`, used by both
+   the builder and runtime stages), `frontend/Dockerfile:3` (`FROM node:24.1.0-alpine3.20`) and
+   `frontend/Dockerfile:11` (`FROM nginx:1.31.0-alpine`). `ci.yml`'s `build` job, `compose.yaml` and
+   the Kubernetes manifests all use these same Dockerfiles, so the runner and every deploy target get
+   the same toolchain. One gap remains: the lint and unit-test jobs run on the runner itself, not in
+   a container, and use `ci.yml:17-18` (`PYTHON_VERSION: "3.12"`, `NODE_VERSION: "22"`). Those jobs
+   therefore test on older versions than the ones we ship. The `integration` job closes most of that
+   gap because it runs the image that was actually built.
 
-3. **Whether the database/cache exist at all.** A laptop running `docker compose up` has
-   long-lived Postgres/Redis containers with named volumes; a CI runner starts from nothing. This
-   is frozen by the `integration` job in `ci.yml`, which runs `docker compose up -d` and explicitly
-   waits on `/ready` before proceeding — the same readiness contract
-   (`backend/app/routes/health.py`) that Kubernetes readiness probes use, so "is the environment
-   actually up" is answered identically in both places rather than assumed.
+3. **Dependency versions.** A laptop's `node_modules` or virtualenv drifts: packages get added by
+   hand, or installs are left half-finished. During the final check, a local `frontend/node_modules`
+   was missing `vitest`, `eslint` and `vite` entirely. In the image, `frontend/Dockerfile:5-6`
+   copies `package-lock.json` and runs `npm ci`, which installs exactly what the lockfile lists and
+   fails if the lockfile and `package.json` disagree. `backend/Dockerfile:9-10` installs
+   `requirements.txt`, where every package except `starlette>=1.3.1` is pinned with `==`.
 
 ## 2. Where this pipeline sits on the CI/CD maturity ladder, and what the next rung buys
 
 This pipeline sits at roughly **"continuous delivery with automated deployment to a verification
 environment, gated by tests and security scanning"** — every merge to `main` is built, scanned
 (Trivy), SBOM'd, and automatically deployed to an ephemeral kind cluster with a smoke test and a
-printed HPA snapshot (`cd.yml`), and nothing publishes or deploys without passing the equivalent of
-the prior stage (`needs:` chains: test → build-push → deploy-k8s).
+printed HPA snapshot (`cd.yml`). Both images are signed keylessly with cosign (`cd.yml:99-100`), and
+the signatures are verified again before anything is deployed (`cd.yml:133`). Nothing publishes or
+deploys unless the stage before it has passed: `needs:` chains test → build-push → deploy-k8s at
+`cd.yml:28` and `cd.yml:114`.
 
 It stops short of **full continuous deployment to a persistent, real production environment with
 progressive delivery** — the deploy target is a disposable kind cluster created inside the same CI
@@ -43,18 +49,35 @@ before it reaches every user, rather than only against a synthetic smoke test.
 
 ## 3. The exact line guaranteeing build-once-deploy-many, and what breaks without it
 
-For the backend, the image built once in `cd.yml`'s `build-push` job is deployed by digest
-(`cd.yml:121-122`, `BACKEND_REF`/`FRONTEND_REF` built from `needs.build-push.outputs.*-digest`) —
-the same artifact, not a rebuild, reaches `overlays/prod` (`cd.yml:174`).
+The line is `.github/workflows/cd.yml:174`:
 
-For the frontend specifically, the guarantee is `frontend/src/config.ts` reading
-`window.__CIVICPULSE_CONFIG__` at runtime instead of `import.meta.env` at build time, combined with
-`frontend/docker-entrypoint.d/40-runtime-config.sh` regenerating `config.js` from environment
-variables on every container start (see [ADR 0002](adr/0002-frontend-runtime-config.md)).
+```
+kustomize edit set image "civicpulse-backend=$BACKEND_REF" "civicpulse-frontend=$FRONTEND_REF"
+```
 
-Without either guarantee, the same source commit would need a separate image built per
-environment (one baked for dev's backend URL, one for prod's), which is exactly the
-environment-specific-image failure mode §2.1 of the assignment calls out explicitly.
+`$BACKEND_REF` and `$FRONTEND_REF` (`cd.yml:121-122`) are `ghcr.io/...@sha256:<digest>` values taken
+from the `build-push` job's outputs (`cd.yml:36-37`). The deploy job never builds anything. It pins
+the prod overlay to the exact bytes that were built, signed (`cd.yml:99-100`) and verified
+(`cd.yml:133`). `cd.yml:176` then refuses to apply any rendered manifest that still contains
+`:latest` or a placeholder image.
+
+Build-once only works if the image contains nothing environment-specific. For the frontend,
+`frontend/src/config.ts` reads `window.__CIVICPULSE_CONFIG__` at runtime rather than
+`import.meta.env` at build time, and `frontend/docker-entrypoint.d/40-runtime-config.sh` writes
+`config.js` from environment variables each time the container starts
+([ADR 0002](adr/0002-frontend-runtime-config.md)).
+
+**What breaks without it:** each environment would rebuild from source. The prod image would then be
+a different artifact from the one that was tested, and a changed base image or dependency could slip
+in between the two builds. The cosign check at `cd.yml:133` would also fail, or would verify an
+image nobody tested. Deploying `:latest` instead of a digest has a similar problem: a later push can
+move the tag while a rollout is still running, and a rollback can redeploy the very version it was
+meant to undo ([ADR 0003](adr/0003-deploy-by-sha.md)).
+
+**Known gap:** the Trivy scan in `ci.yml`'s `scan` job runs against the image CI built. `build-push`
+then builds the image again from the same GHA layer cache. The two are almost certainly
+byte-identical, but the pipeline doesn't prove it. The fix is to push once and then scan and sign
+that one digest.
 
 ## 4. What "correct" means for a probabilistic LLM component, and how CI stays deterministic
 
@@ -159,17 +182,31 @@ unrestricted so it can still reach Groq.
 
 ## 8. The failure — something that cost more than an hour
 
-**TODO — this one has to be a real incident from your own work on this project, not a generic
-one.** Write 3-5 sentences covering:
-- **Symptoms**: what you actually observed (an error message, a hung request, a wrong dashboard
-  number, a CI job that wouldn't go green).
-- **What you wrongly believed first**: your initial, incorrect theory about the cause, and why it
-  seemed plausible at the time.
-- **The exact command or log line that finally told you the truth**: paste it verbatim.
+**Symptoms.** For the first HPA recording we started `scripts/record-hpa.sh` in the background and
+then ran k6. The load test ran to completion and the HPA scaled out, but the CSV contained only its
+header row. The script had exited after its first loop iteration without printing any error. That
+run was lost, which is why the evidence file is `docs/evidence/hpa-run2.csv`.
 
-Good candidates to look back at, if nothing comes to mind immediately: the first time
-`docker compose up` failed because of the `internal: true` network and a service couldn't resolve
-another container's hostname; the first `kubectl rollout status` that hung because a readiness
-probe was pointed at the wrong path; a coverage or lint failure in CI that passed locally but
-failed in the runner because of the environment differences described in Q1; or a migration that
-worked against a fresh database but failed against the seeded one.
+**What we wrongly believed first.** We assumed metrics-server wasn't reporting yet. Right after a
+deploy, `kubectl get hpa` shows `<unknown>/60%` for up to a minute, so we believed the `kubectl`
+call inside the script was failing and killing it under `set -e`. We waited for real CPU numbers in
+`kubectl get hpa` and re-ran the script, but it died the same way. That ruled out metrics-server:
+`kubectl` was succeeding and returning data every time.
+
+**What finally told us the truth.** Running the script with a trace:
+
+```
+$ bash -x scripts/record-hpa.sh hpa.csv; echo "exit status: $?"
++ read -r cur des cpu
+++ kubectl -n civicpulse get hpa backend-hpa -o 'jsonpath={.status.currentReplicas} {.status.desiredReplicas} {.status.currentMetrics[0].resource.current.averageUtilization}'
+exit status: 1
+```
+
+The last traced command is `read`, not `kubectl`, and `echo` never runs. Piping the same
+`kubectl ... -o jsonpath=...` through `od -c` showed why: jsonpath output has no trailing newline.
+When `read` hits end-of-file before a newline, it still fills the variables but returns 1, and
+`set -e` (`scripts/record-hpa.sh:5`) treats that as fatal. The fix (commit `8515dce`) appends
+`{"\n"}` to the jsonpath (`scripts/record-hpa.sh:12`) and adds `|| echo "0 0 0"` so that a
+transient `kubectl` error records a zero row instead of killing the recorder. The lesson: when
+`set -e` kills a script without a message, `bash -x` shows which command actually failed. The
+failure may not be in the command you suspect.
