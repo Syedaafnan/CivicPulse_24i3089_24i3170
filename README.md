@@ -37,8 +37,8 @@ flowchart TB
 
 ```bash
 git clone <this repo> && cd civicpulse
-cp .env.example .env          # optionally add a free Groq key and set TRIAGE_PROVIDER=llm
-docker compose up --build     # migrations + seed run automatically
+docker compose up --build     # migrations + seed run automatically; no .env needed
+# optional: cp .env.example .env, add a free Groq key and set TRIAGE_PROVIDER=llm
 open http://localhost:8080
 ```
 
