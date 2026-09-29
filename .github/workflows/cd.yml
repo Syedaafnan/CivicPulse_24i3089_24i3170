@@ -1,5 +1,5 @@
 # CD — on every push to main (i.e. every merged dev → main PR):
-#   test (full CI again, on the merged result) → build-push (GHCR, SBOM, cosign) → deploy-k8s (ephemeral kind)
+#   test (full CI again, on the merged result) → build-push (GHCR, SBOM, trivy on the pushed digest, cosign) → deploy-k8s (ephemeral kind)
 # Every publishing/deploying job is gated by `needs:`. Deploys use the image DIGEST: immutable,
 # and traceable to the commit via the `:<sha>` tag that points at the same digest.
 name: cd
@@ -17,6 +17,7 @@ concurrency:
 
 env:
   KUSTOMIZE_VERSION: "5.5.0"
+  TRIVY_VERSION: "0.74.0"
 
 jobs:
   test:
@@ -88,6 +89,29 @@ jobs:
           image: ghcr.io/${{ steps.owner.outputs.owner }}/civicpulse-frontend@${{ steps.frontend.outputs.digest }}
           format: spdx-json
           artifact-name: sbom-frontend.spdx.json
+
+      # Scan the exact digests that were pushed (not CI's local build) and only sign what passes.
+      # deploy-k8s verifies the signature, so an image that fails here can never be deployed.
+      - name: install trivy (pinned version, checksum verified)
+        run: |
+          cd /tmp
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -sSfLO "$base/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfLO "$base/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+      - name: trivy — scan the pushed digests (HIGH/CRITICAL with a fix available)
+        env:
+          OWNER: ${{ steps.owner.outputs.owner }}
+          BACKEND: ${{ steps.backend.outputs.digest }}
+          FRONTEND: ${{ steps.frontend.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for ref in "ghcr.io/$OWNER/civicpulse-backend@$BACKEND" "ghcr.io/$OWNER/civicpulse-frontend@$FRONTEND"; do
+            /tmp/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 --no-progress "$ref"
+          done
 
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
       - name: sign both images by digest (keyless)

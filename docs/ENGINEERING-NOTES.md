@@ -17,10 +17,10 @@ and lines.
    the builder and runtime stages), `frontend/Dockerfile:3` (`FROM node:24.1.0-alpine3.20`) and
    `frontend/Dockerfile:11` (`FROM nginx:1.31.0-alpine`). `ci.yml`'s `build` job, `compose.yaml` and
    the Kubernetes manifests all use these same Dockerfiles, so the runner and every deploy target get
-   the same toolchain. One gap remains: the lint and unit-test jobs run on the runner itself, not in
-   a container, and use `ci.yml:17-18` (`PYTHON_VERSION: "3.12"`, `NODE_VERSION: "22"`). Those jobs
-   therefore test on older versions than the ones we ship. The `integration` job closes most of that
-   gap because it runs the image that was actually built.
+   the same toolchain. The lint and unit-test jobs run on the runner itself, not in a container, so
+   `ci.yml:17-18` (`PYTHON_VERSION: "3.14"`, `NODE_VERSION: "24"`) pins them to the same versions the
+   images ship. Those jobs used to run on 3.12 and 22, so the tests ran on older runtimes than
+   production.
 
 3. **Dependency versions.** A laptop's `node_modules` or virtualenv drifts: packages get added by
    hand, or installs are left half-finished. During the final check, a local `frontend/node_modules`
@@ -34,10 +34,10 @@ and lines.
 This pipeline sits at roughly **"continuous delivery with automated deployment to a verification
 environment, gated by tests and security scanning"** — every merge to `main` is built, scanned
 (Trivy), SBOM'd, and automatically deployed to an ephemeral kind cluster with a smoke test and a
-printed HPA snapshot (`cd.yml`). Both images are signed keylessly with cosign (`cd.yml:99-100`), and
-the signatures are verified again before anything is deployed (`cd.yml:133`). Nothing publishes or
-deploys unless the stage before it has passed: `needs:` chains test → build-push → deploy-k8s at
-`cd.yml:28` and `cd.yml:114`.
+printed HPA snapshot (`cd.yml`). The exact pushed digests are scanned with Trivy (`cd.yml:112`), and
+only then signed keylessly with cosign (`cd.yml:123-124`). The signatures are verified again before
+anything is deployed (`cd.yml:157`). Nothing publishes or deploys unless the stage before it has
+passed: `needs:` chains test → build-push → deploy-k8s at `cd.yml:29` and `cd.yml:138`.
 
 It stops short of **full continuous deployment to a persistent, real production environment with
 progressive delivery** — the deploy target is a disposable kind cluster created inside the same CI
@@ -49,16 +49,16 @@ before it reaches every user, rather than only against a synthetic smoke test.
 
 ## 3. The exact line guaranteeing build-once-deploy-many, and what breaks without it
 
-The line is `.github/workflows/cd.yml:174`:
+The line is `.github/workflows/cd.yml:198`:
 
 ```
 kustomize edit set image "civicpulse-backend=$BACKEND_REF" "civicpulse-frontend=$FRONTEND_REF"
 ```
 
-`$BACKEND_REF` and `$FRONTEND_REF` (`cd.yml:121-122`) are `ghcr.io/...@sha256:<digest>` values taken
-from the `build-push` job's outputs (`cd.yml:36-37`). The deploy job never builds anything. It pins
-the prod overlay to the exact bytes that were built, signed (`cd.yml:99-100`) and verified
-(`cd.yml:133`). `cd.yml:176` then refuses to apply any rendered manifest that still contains
+`$BACKEND_REF` and `$FRONTEND_REF` (`cd.yml:145-146`) are `ghcr.io/...@sha256:<digest>` values taken
+from the `build-push` job's outputs (`cd.yml:37-38`). The deploy job never builds anything. It pins
+the prod overlay to the exact bytes that were built, scanned (`cd.yml:112`), signed
+(`cd.yml:123-124`) and verified (`cd.yml:157`). `cd.yml:200` then refuses to apply any rendered manifest that still contains
 `:latest` or a placeholder image.
 
 Build-once only works if the image contains nothing environment-specific. For the frontend,
@@ -69,15 +69,16 @@ Build-once only works if the image contains nothing environment-specific. For th
 
 **What breaks without it:** each environment would rebuild from source. The prod image would then be
 a different artifact from the one that was tested, and a changed base image or dependency could slip
-in between the two builds. The cosign check at `cd.yml:133` would also fail, or would verify an
+in between the two builds. The cosign check at `cd.yml:157` would also fail, or would verify an
 image nobody tested. Deploying `:latest` instead of a digest has a similar problem: a later push can
 move the tag while a rollout is still running, and a rollback can redeploy the very version it was
 meant to undo ([ADR 0003](adr/0003-deploy-by-sha.md)).
 
-**Known gap:** the Trivy scan in `ci.yml`'s `scan` job runs against the image CI built. `build-push`
-then builds the image again from the same GHA layer cache. The two are almost certainly
-byte-identical, but the pipeline doesn't prove it. The fix is to push once and then scan and sign
-that one digest.
+The same rule applies to the security scan. `ci.yml`'s `scan` job checks CI's local build on every
+PR. On `main`, `cd.yml:112` scans the digest that was actually pushed, before signing it. An image
+that fails that scan never gets a signature, and the `cosign verify` at `cd.yml:157` refuses to
+deploy an unsigned image. What was scanned, what was signed and what was deployed are therefore
+provably the same bytes.
 
 ## 4. What "correct" means for a probabilistic LLM component, and how CI stays deterministic
 

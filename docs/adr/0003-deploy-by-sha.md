@@ -12,15 +12,15 @@ one-word answer pastable into `git show`.
 
 ## Decision
 `cd.yml`'s `build-push` job builds and pushes each image to GHCR tagged with both the commit SHA
-and `latest` (`cd.yml:58,72` — `latest` is pushed for convenience/browsability only), and captures
-each image's **content digest** as a job output (`cd.yml:36-37`). The `deploy-k8s` job never
+and `latest` (`cd.yml:58-59,72-73` — `latest` is pushed for convenience/browsability only), and captures
+each image's **content digest** as a job output (`cd.yml:37-38`). The `deploy-k8s` job never
 references either tag when deploying — it builds `BACKEND_REF`/`FRONTEND_REF` directly from those
-digest outputs (`cd.yml:121-122`) and renders the prod overlay against them via
-`kustomize edit set image ...@<digest>` (`cd.yml:174`).
+digest outputs (`cd.yml:145-146`) and renders the prod overlay against them via
+`kustomize edit set image ...@<digest>` (`cd.yml:198`).
 
 As a guardrail against this regressing silently, the same job greps the rendered manifest and
 fails the pipeline if it finds `:latest`, an unresolved `set-by-cd` placeholder, or an unresolved
-`/OWNER/` placeholder anywhere in it (`cd.yml:176`), rather than trusting that every future edit to
+`/OWNER/` placeholder anywhere in it (`cd.yml:200`), rather than trusting that every future edit to
 the workflow preserves the digest-only invariant.
 
 Every publish/deploy job is also gated with an explicit `needs:` dependency on the job that
