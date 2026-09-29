@@ -10,8 +10,6 @@ CivicPulse validates it, triages it into a **category**, a **priority** and a **
 (with an LLM, falling back to keyword rules when the LLM is slow, rate-limited or wrong),
 stores it in PostgreSQL, and shows it on a live operations dashboard with cached statistics.
 
-> Still to write: the four ADRs, `docs/ENGINEERING-NOTES.md` (§5.2) and the evidence in `docs/evidence/`.
-
 ## Architecture
 
 ```mermaid
@@ -106,7 +104,7 @@ Status machine: `open → in_progress → resolved`, `open → rejected`, `in_pr
 
 All actions are pinned to commit SHAs. Every workflow has a least-privilege `permissions:` block. Credentials come from
 `GITHUB_TOKEN` (GHCR) and repository secrets `POSTGRES_PASSWORD` / `LLM_API_KEY` (both optional for the ephemeral cluster).
-Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md) · scaling evidence: [docs/SCALING.md](docs/SCALING.md).
+Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md) · scaling evidence: [docs/evidence/](docs/evidence/) and §5 of [docs/ENGINEERING-NOTES.md](docs/ENGINEERING-NOTES.md).
 
 ## Repository layout
 
@@ -118,12 +116,12 @@ k8s/       base/{namespace,configmap,secret,postgres,redis,backend,frontend,ingr
 load/      k6-script.js
 scripts/   kind-up.sh  cluster-addons.sh  smoke.sh  record-hpa.sh
 .github/   workflows/{ci,cd,release}.yml  dependabot.yml
-docs/      RUNBOOK.md  SCALING.md  GIT-WORKFLOW.md  AI-USAGE.md  screenshots/
+docs/      RUNBOOK.md  ENGINEERING-NOTES.md  TRIAGE.md  AI-USAGE.md  adr/  evidence/  screenshots/
 compose.yaml  compose.prod.yaml  .env.example
 ```
 
 ## Screenshots
 
-| Submit | Dashboard (server 409 shown verbatim) | Stats (X-Cache) |
+| Submit | Dashboard | Stats (X-Cache) |
 |---|---|---|
-| ![](docs/screenshots/ui-submit.png) | ![](docs/screenshots/ui-dashboard-409.png) | ![](docs/screenshots/ui-stats.png) |
+| ![](docs/screenshots/ui-submit.png) | ![](docs/screenshots/ui-dashboard.png) | ![](docs/screenshots/ui-stats.png) |
