@@ -14,8 +14,8 @@ permissions:
   contents: read           # least privilege: read the code, nothing else
 
 env:
-  PYTHON_VERSION: "3.12"
-  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.14"   # same minor as backend/Dockerfile — test what ships
+  NODE_VERSION: "24"       # same major as frontend/Dockerfile
   KUSTOMIZE_VERSION: "5.5.0"
   KUBECONFORM_VERSION: "0.6.7"
   HADOLINT_VERSION: "2.12.0"
@@ -166,7 +166,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install pyyaml==6.0.2
+      - run: pip install pyyaml==6.0.3
       - name: kustomize build | kubeconform (both overlays)
         run: |
           for overlay in dev prod; do
