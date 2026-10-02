@@ -36,7 +36,7 @@ jobs:
       backend-digest: ${{ steps.backend.outputs.digest }}
       frontend-digest: ${{ steps.frontend.outputs.digest }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: owner
         name: registry owner must be lowercase
         run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
@@ -121,7 +121,7 @@ jobs:
       BACKEND_REF: ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-backend@${{ needs.build-push.outputs.backend-digest }}
       FRONTEND_REF: ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-frontend@${{ needs.build-push.outputs.frontend-digest }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
       - name: verify signatures before deploying
